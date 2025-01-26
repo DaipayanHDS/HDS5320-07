@@ -1,0 +1,162 @@
+---
+title: "High Performance Computing Week 1 Assignment"
+Author: "Daipayan Bera"
+output: html_notebook
+---
+
+```{r}
+rm(list = ls())
+```
+
+```{r}
+#Installing and including data.table library in the environment
+if(!library("data.table", logical.return=TRUE)){
+  install.packages("data.table")
+}
+library(data.table)
+if(!library("Hmisc", logical.return = TRUE)){
+  install.packages(Hmisc)
+}
+library(Hmisc)
+if(!library("testthat", logical.return=TRUE)){
+  install.packages("testthat")
+}
+library(testthat)
+```
+
+
+```{r}
+#Reading all the required files and saving it as a data.table
+getwd() #Setting working directory
+setwd('./healthcare-data')
+outpatient.visit.dt <- fread("OutpatientVisit.csv")
+patient.dt <- fread("Patient.csv")
+clinic.dt <- fread("Clinic.csv")
+mortality.dt <- fread("Mortality.csv")
+icdcodes.dt <- fread("ICDCodes.csv")
+diseasemap.dt <- fread("DiseaseMap.csv")
+```
+```{r}
+test_that("Outpatient loaded", { expect_equal(outpatient.visit.dt [,.N],174690)})
+test_that("Patient loaded", { expect_equal(patient.dt [,.N],20000)})
+test_that("Clinic loaded", { expect_equal(clinic.dt[,length(ClinicCode)], 60)})
+test_that("Clinic loaded", { expect_equal(clinic.dt[,.N], 60)})
+test_that("Mortality loaded", { expect_equal(mortality.dt[,.N],7094)})
+test_that("ICD10 loaded", { expect_equal(icdcodes.dt[,.N],3419)})
+test_that("Disease loaded", { expect_equal(diseasemap.dt[,.N],3419)})
+```
+**Q.1. Are men more likely to die than women in this group of patients? Assume people without a date of death in the mortality table are still alive.**
+
+To answer this question, we need two features that is mortality flag i.e. date of death, and gender. We can first check "mortality.csv" file.
+```{r}
+str(mortality.dt)
+setkey(mortality.dt,PatientID)
+```
+
+So, we can see that we have "dod" but we don't have the demographic information of patient's gender, that we may find in "patient.csv". Let us check that.
+```{r}
+str(patient.dt)
+```
+So, we have found both of our features, now we need to add both tables.
+
+```{r}
+p.copy <- patient.dt[,.(PatientID,Gender)] #We don't require all other features, therefore truncated data table is better in terms of efficiency
+setkey(p.copy,PatientID) #Setting PatientID as key
+p.mortal <- merge(p.copy,mortality.dt,all=TRUE) #Using full-join
+```
+
+Now, that we have merged, let us try to see the distribution of the data.
+```{r}
+Hmisc::describe(p.mortal)
+```
+So, here, there are a few observations. First of all, fortunately, there's no duplicate of PatientIDs, but in the Gender feature, instead of two levels, we see 3 levels ("MISSING"), and we see there are a total of 569 missing values. We can consider removing these as we are just interested in the comparison between these two groups. But through group-by operation, we can just get by.
+
+```{r}
+mortalityRate.dt <- p.mortal[,.(mortality_rate = (sum(!is.na(DateOfDeath))/.N)*100), by=Gender]
+female.mort <- mortalityRate.dt[Gender=="female",mortality_rate] #Using female.mort to save female mortality rate
+male.mort <- mortalityRate.dt[Gender=="male",mortality_rate] #Using male.mort to save male mortality rate
+```
+
+##TEST Q1
+```{r}
+menMoreLikely = female.mort < male.mort # FALSE because female mort = 35.1%; male mort = 35.9%
+test_that("men more likely to die", { expect_equal(menMoreLikely, TRUE)})
+```
+
+**Ans. So we can see that male has higher chances (approx- 0.83%) of mortality in this data set.**
+
+**2.Are there patterns in the disease groups across gender. For every patient with at least one outpatient visit, identify if they have been diagnosed with any of the 22 conditions listed in the diseaseMap table at any time point. You will need to consider all three ICD columns in the outpatientVisit file (not just one). Create a table with the rate of disease for each condition for men, women, and all.**
+
+```{r}
+setkey(outpatient.visit.dt,PatientID) #Setting key for outpatient visit file
+outPV.dt <- outpatient.visit.dt[,.(PatientID,VisitDate,ICD10_1,ICD10_2,ICD10_3)] #Creating a separate data table with containing relevant features for faster processing
+#As the ICD codes are distributed in three columns so we need to get that wide format to long format
+outPV.dt <- melt(outPV.dt, id.vars=c('PatientID','VisitDate'), variable.name='ICD10', value.name='ICD10Codes')
+#Lets print the result
+outPV.dt
+```
+
+```{r}
+#Lets check the distribution of the data now with describe function
+Hmisc::describe(outPV.dt)
+```
+```{r}
+setkey(diseasemap.dt,ICD10) #Setting ICD10 as key for diseasemap
+setkey(outPV.dt,ICD10Codes) #Setting ICD10Codes as key for outPV.dt
+outPV_DM.dt <- diseasemap.dt[outPV.dt,nomatch=0] #Performing inner join
+outPV_DM.dt #Show the the data
+```
+```{r}
+setkey(outPV_DM.dt,PatientID) #Now resetting the key as PatientID to be able to join with patient data table
+outPV_DM_Gender.dt <- p.copy[outPV_DM.dt] #Performing right join 
+outPV_DM_Gender.dt #Print the result
+```
+We can see from the data that each patient can be diagnosed with the same ICD code, and as we are to only consider at least one outpatient visit for each condition, therefore we need to remove all the duplicated data points and keep only unique combinations.
+
+Next, as we need to keep only 'male' and 'female' gender, therefore we are only going to filter it to that and then apply group by on 'Condition' first and then by 'Gender.'.
+
+Finally, we need to print the result in percentage; therefore, we will print that by 'Condition.'.
+
+```{r}
+result <- outPV_DM_Gender.dt[!duplicated(outPV_DM_Gender.dt, by = c("PatientID", "Condition"))][Gender=='male' | Gender == 'female',.N, by = .(Condition, Gender)][, Percent := (N / sum(N)) * 100, by = Condition]
+```
+
+```{r}
+summaries.dt <- dcast(result,Condition ~ Gender)[, All:=female+male]
+```
+
+##Q2. Test
+```{r}
+test_that("summaries populated", { expect_equal(summaries.dt [,.N],22)})
+```
+**3. Calculate the mortality rate for every year between 2005 and 2018. Is it generally increasing, or decreasing? Assume patients are only at risk of death as of their first visit (in the outpatient Visit file). Once they have died, they are no longer at risk in subsequent year.**
+
+The formula to solve this question is the number of people who died in a year divided by the number of people who were at risk, and the way we are considering people who are at risk is by their first visit as an outpatient; therefore, if there's a person who has died before that specific year, we won't be considering them. So first, we need to get the first visit date for each patient.
+```{r}
+outPV.dt <- outpatient.visit.dt[,.(FirstVisit=min(VisitDate)),by=PatientID][!is.na(FirstVisit)] #We applied min() to get the minimum value of visit date and applied group by on PatientID, also we also don't like to keep data points with NA values in the FirstVisit as we won't be able to compute anything on that data.
+Hmisc::describe(outPV.dt) #Lets look at the distribution of the data
+```
+Now, as we can see we have got distinct PatientsIDs and their Firstvisitdate, now we can join this data with mortality.dt, to get the dateofdeath feature.
+
+```{r}
+setkey(outPV.dt,PatientID) #Setting key as PatientID
+outPV_mortal.dt <- merge(mortality.dt,outPV.dt,all=TRUE) #Using full join
+#Now as we are only interested in the year, therefore we are going to extract that and select relavant features only.
+result <- outPV_mortal.dt[, `:=`(FirstVisitYear = as.numeric(format(FirstVisit, "%Y")),YearOfDeath = as.numeric(format(DateOfDeath, "%Y")))][,.(PatientID, FirstVisitYear, YearOfDeath)]
+```
+
+```{r}
+get_mortality_rate <- function(yr)
+  #This function will compute and return the mortality rate by using the following formula.
+  #Mortality rate = (Death in the selected year / Patients who were at risk in that year) *100"
+  
+  return (result[YearOfDeath==yr,.N]*100/result[(FirstVisitYear<=yr) & (is.na(YearOfDeath) | YearOfDeath>=yr),.N])
+```
+
+```{r}
+#Using the get_mortality_rate function to retrieve mortality rate in 2013
+get_mortality_rate(2013)
+```
+
+**I didn't put the test here, because the value in the given testthat statement doesn't line up with the opening mortality. csv in an Excel sheet and applying a filter on it, I could see that there are 715 people who died in 2013. So if we were to consider 1.638896 as the rate for the year 2013, then the number of people who would be at risk in that year would be 71500/1.638896 = 43626.93. Considering that the number of total cohorts is 20,000, then this number is incorrect.**
+
