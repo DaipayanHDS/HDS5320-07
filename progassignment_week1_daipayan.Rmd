@@ -140,7 +140,8 @@ Now, as we can see we have got distinct PatientsIDs and their Firstvisitdate, no
 
 ```{r}
 setkey(outPV.dt,PatientID) #Setting key as PatientID
-outPV_mortal.dt <- merge(mortality.dt,outPV.dt,all=TRUE) #Using full join
+outPV_mortal.dt <- merge(outPV.dt,mortality.dt,all.x=TRUE) #Using left join to maintain FirstVisit to have non-null values
+Hmisc::describe(outPV_mortal.dt)
 #Now as we are only interested in the year, therefore we are going to extract that and select relavant features only.
 result <- outPV_mortal.dt[, `:=`(FirstVisitYear = as.numeric(format(FirstVisit, "%Y")),YearOfDeath = as.numeric(format(DateOfDeath, "%Y")))][,.(PatientID, FirstVisitYear, YearOfDeath)]
 ```
@@ -151,6 +152,13 @@ get_mortality_rate <- function(yr)
   #Mortality rate = (Death in the selected year / Patients who were at risk in that year) *100"
   
   return (result[YearOfDeath==yr,.N]*100/result[(FirstVisitYear<=yr) & (is.na(YearOfDeath) | YearOfDeath>=yr),.N])
+```
+
+```{r}
+#As per the question, let us print mortality rates for all selected years
+years <- 2005:2018
+mortality_table <- data.table(Year = years, MortalityRate = sapply(years, get_mortality_rate)) #Using the user defined function to get the mortality rates
+mortality_table
 ```
 
 ```{r}
