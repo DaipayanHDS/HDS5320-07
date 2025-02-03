@@ -1,0 +1,209 @@
+---
+title: "High Performance Computing Week 1 Assignment"
+author: "Daipayan Bera"
+date: "01-31-2025"
+output: html_notebook
+---
+```{r}
+#Clearing environment
+rm(list = ls())
+library(foreach)
+library(doParallel) #Importing doParallel package
+```
+
+**Q1: Importing required library to import data**
+
+```{r}
+library(MASS)
+data("Boston")
+registerDoSEQ() #Verifying that we are working with serially
+```
+
+**Q1: Creating 100 Bootstrap samples of the dataset with the SAME dimension using REPLACE=TRUE**
+
+```{r}
+n <- nrow(Boston)
+Rprof("serial_sampling")
+set.seed("143")
+boston_bootstrap <- foreach(i=1:100) %do% {Boston[sample(n, n, replace = TRUE), ]}
+Rprof(NULL)
+summaryRprof('serial_sampling')
+```
+*So, here I have used FOREACH function with %DO% to recieve a list of dataframes after bootstraping, by using the SAMPLE function. I have also used RPROF to see how proficient is the segment in terms of time complexity.*
+
+**Q1: Fitting GLM model on each bootstrap sample**
+
+```{r}
+Rprof("serial_model")
+boston_bootstrap.lm <- foreach(i=1:100) %do% {glm(medv~., data=boston_bootstrap[[i]])}
+Rprof(NULL)
+summaryRprof("serial_model")
+```
+
+*By using the same principle, I have recieved a list of the all fitted model. I have utlized all independent variables as predictor and MEDV as outcome variable.*
+
+**Q2: Retrieving model statistics for all fitted models**
+
+```{r}
+if (!requireNamespace("broom", quietly = TRUE)) {
+  install.packages("broom")
+}
+library(broom)
+```
+
+*Here, I wanted to receive the model statistics as a dataframe which further could be used for plotting. So I took help of BROOM package (https://cran.r-project.org/web/packages/broom/vignettes/broom.html). It has three main functions, 1. Tidy, 2. Augment, 3. Glance. Here, I am going to use GLANCE. It provides one row summary of all model performance statistics that we are interested in.*
+
+*But the issue is that, if we apply this as function on the list, it is going to provide 100 statistic dataframes of each model. As we want a consolidated dataframe for all model statistics, therefore, I am going to use RBIND with DO.APPLY on the list of dataframes (Returned from GLANCE function)*
+
+```{r}
+Rprof("serial_statistics")
+boston_boot.lm.fit <- foreach(i=1:100) %do% {
+  glance(boston_bootstrap.lm[[i]])}
+Rprof(NULL)
+summaryRprof("serial_statistics")
+```
+
+*Applying RBIND on the list of one-row dataframes*
+
+```{r}
+bootstrap_statistics <- do.call(rbind, boston_boot.lm.fit)
+```
+
+
+```{r}
+#Lets check the data that we have recieved
+head(bootstrap_statistics)
+```
+
+**Q3: Now, I was asked to "Aggregate the model fit statistics across the 100 bootstrapped samples and plot the results". So I am choosing MEAN as aggregation.**
+
+```{r}
+bootstrap_statistics.mean <- data.frame(apply(bootstrap_statistics,2, mean))
+bootstrap_statistics.mean
+```
+
+*But, here I ran into a problem, as I typecasted the resultant vector as dataframe. It always showed the statistic names as index or something. No matter what I did to change/remove with my ability. It didn't get affected at all. Also, when I used it to plot, it also didn't appear in the axis. So, I went ahead and crated a separate column with the same entries.*
+
+```{r}
+bootstrap_statistics.mean["Statistics"] = c("null.deviance","df.null","logLik","AIC","BIC","deviance","df.residual","nobs")
+names(bootstrap_statistics.mean)[1] = "Mean"
+bootstrap_statistics.mean
+```
+*Although, it's still there, but now I have what I need to create a bar plot of the statistic.*
+
+```{r}
+library(ggplot2)
+serial.plot <-ggplot(data = bootstrap_statistics.mean, aes(x = Statistics, y = Mean)) +
+  geom_col() + #Using geom_bar gave stat_count() error, cause for geom_bar, y variable takes a categorical variable as input
+  labs(title = "Serially computed bootstrap samples : GLM model statistics(Mean)")
+serial.plot
+```
+**Q3: Computing all other model statistics**
+
+```{r}
+summary(bootstrap_statistics)
+```
+**Q4. Creating bootstrap samples parallelly with foreach function**
+
+```{r}
+cl <- makeCluster(detectCores(), type='PSOCK')
+registerDoParallel(cl)
+getDoParWorkers() #Verifying that we are computing parallelly
+```
+```{r}
+Rprof("parallel_sampling")
+set.seed(143)
+parallel_boot.samples <- foreach (i=1:100, .packages = c("doParallel", "foreach")) %dopar% {Boston[sample(n, n, replace = TRUE),]}
+Rprof(NULL)
+summaryRprof("parallel_sampling")
+```
+
+**Fitting GLM model on each bootstrap sample (Parallelly)**
+
+```{r}
+Rprof("Parallel_model")
+parallel_boot.models <- foreach(i=1:100, parallel_boot.samples, .packages = c("doParallel", "foreach")) %dopar% {
+  glm(medv~.,data=parallel_boot.samples[[i]]) 
+}
+Rprof(NULL)
+summaryRprof("Parallel_model")
+```
+
+**Q4. Retrieving model statistics for all bootstrap models (Using Parallelization)**
+
+```{r}
+Rprof("parallel_statistics")
+parallel_boot.statistics <- foreach(i=1:100, parallel_boot.models, .packages = c("doParallel", "foreach", "broom")) %dopar% {
+  glance(parallel_boot.models[[i]])
+}
+Rprof(NULL)
+summaryRprof("parallel_statistics")
+```
+
+
+**Q4. Retrieving a dataframe consisting all model statistics**
+
+```{r}
+parallel_boot.statistics.merge <- do.call(rbind, parallel_boot.statistics) #Using rbind to combine all one-row dataframes (recieved from GLANCE function) into one dataframe to better usability 
+parallel_boot.statistics.mean <- data.frame(apply(parallel_boot.statistics.merge,2, mean))
+#Creating a separate column consisting all the model statistic labels
+parallel_boot.statistics.mean["Statistics"] = c("null.deviance","df.null","logLik","AIC","BIC","deviance","df.residual","nobs")
+names(parallel_boot.statistics.mean)[1] = "Mean"
+parallel_boot.statistics.mean
+```
+
+**Q4. Plotting aggregated (Mean) model statistics for both Parallel and Serial computing**
+
+```{r}
+ggplot(data = parallel_boot.statistics.mean, aes(x = Statistics, y = Mean))+
+  geom_col()+
+  labs(title = "Parallelly computed bootstrap samples : GLM model statistics(Mean)")
+serial.plot
+```
+```{r}
+#Stopping cluster and parallel computing
+stopCluster(cl)
+registerDoSEQ()
+```
+
+###Profiling through Microbenchmark
+
+```{r}
+serial_bootstrap_glmfit <- function(Boston){
+  n=nrow(Boston)
+  library(broom)
+  set.seed("143")
+  serial_bootstrap <- foreach(i=1:100) %do% {Boston[sample(n, n, replace = TRUE), ]}
+  serialboot_glm <-foreach(i=1:100) %do% {glm(medv~.,data=serial_bootstrap[[i]])}
+  serialboot_glm_stat <- foreach(i=1:100) %do% {glance(serialboot_glm[[i]])}
+  serial_stats <- do.call(rbind, serialboot_glm_stat)
+}
+```
+
+```{r}
+parallel_bootstrap_glmfit <- function(Boston){
+  cl <- makeCluster(detectCores()-1, type='PSOCK')
+  doParallel::registerDoParallel()
+  n=nrow(Boston)
+  set.seed("143")
+  parallel_bootstrap <- foreach(i=1:100, .packages = c("foreach","doParallel")) %dopar% {
+    Boston[sample(n, n, replace = TRUE), ]}
+  parallelboot_glm <-foreach(i=1:100, .packages = c("foreach","doParallel")) %dopar% {
+    glm(medv~.,data=parallel_bootstrap[[i]])}
+  parallelboot_glm_stat <- foreach(i=1:100,.packages = c("foreach","doParallel","broom")) %dopar% {
+    glance(parallelboot_glm[[i]])}
+  parallel_stats <- do.call(rbind, parallelboot_glm_stat)
+  stopCluster(cl)
+  registerDoSEQ()
+}
+```
+
+
+```{r}
+microbenchmark::microbenchmark(
+  'serial_op' = serial_bootstrap_glmfit(Boston),
+  'parallel_op' = parallel_bootstrap_glmfit(Boston),
+  times=10
+)
+```
+
