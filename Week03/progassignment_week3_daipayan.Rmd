@@ -1,0 +1,74 @@
+---
+title: "High Performance Computing Week 3 Assignment"
+Author: "Daipayan Bera"
+output: html_notebook
+---
+
+```{r}
+#Importing data
+clinics_df <- read.csv("clinics.csv", sep = "|")
+```
+
+**This is the function based on haversine formula which determines the great-circle distance between two points on earth given their longitudes and latitudes. (Source : https://medium.com/upside-engineering/a-beginners-guide-to-optimizing-pandas-code-for-speed-c09ef2c6a4d6)**
+
+```{r}
+library(pracma) #Importing pracma library to utilize deg2rad method
+
+haversine <- function(lat1, lon1, lat2, lon2) {
+  miles_constant <- 3959
+  lat1 <- deg2rad(lat1)
+  lon1 <- deg2rad(lon1)
+  lat2 <- deg2rad(lat2)
+  lon2 <- deg2rad(lon2)
+  dlat <- lat2 - lat1
+  dlon <- lon2 - lon1
+  a <- sin(dlat / 2)^2 + cos(lat1) * cos(lat2) * sin(dlon / 2)^2
+  c <- 2 * asin(sqrt(a))
+  mi <- miles_constant * c
+  return(mi)
+}
+```
+
+**Using different looping methods and profiling it**
+
+```{r}
+#For loop function
+forloopfunc <- function(){
+  haversine_series <- numeric(nrow(clinics_df))
+  for (row in 1:nrow(clinics_df)){
+    haversine_series[row] <- haversine(38.6227,-90.2382, clinics_df[row, "locLat"], clinics_df[row, "locLong"])}
+  clinics_df$Distance <<- haversine_series
+}
+
+#Using apply() method
+applyfunc <- function() {
+  clinics_df$Distance <<- apply(clinics_df, 1, function(row) {haversine(38.6227, -90.2382, as.numeric(row["locLat"]), as.numeric(row["locLong"]))
+  })
+}
+
+#Using R's vectorized operation, directly passing it to the function
+vectorizedfunc <- function(){
+  clinics_df["Distance"] <<- haversine(38.6227, -90.2382, clinics_df$locLat, clinics_df$locLong)
+}
+```
+
+**Now, we are going to use microbenchmark to profile these functions.**
+
+```{r}
+library(microbenchmark)
+
+result <- microbenchmark(
+  "forloop" = forloopfunc(),
+  "apply" = applyfunc(),
+  "vectorized" = vectorizedfunc(),
+  times = 100,
+  unit = 'ms'
+)
+```
+
+```{r}
+#Printing out the result
+result <- summary(result)
+write.csv(result, file = "result_R.csv")
+```
+**So, we can see that vectorized functions are much more efficient.**
