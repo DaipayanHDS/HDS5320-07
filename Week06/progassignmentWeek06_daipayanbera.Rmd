@@ -1,0 +1,125 @@
+---
+title: "Week 06 - Genetic Algorithm Assignment"
+Author: "Daipayan Bera"
+Date: "03-02-2025"
+output: html_notebook
+---
+
+**In this assignment, we will be applying the genetic algorithm approach for solving a problem involving locations of healthcare facilities. "Mo_pop_Sim.zip", contains simulated data of the residential locations of (assumed) residents of Missouri. And "MO_2018_Federally_Qualified_Health_Center_Locations.zip" contains data on FQHCs. Our goal is to identify, from the list of FQHCs, a set of 8 FQHCs where we can provide specialized mental health services. Assume that none of FQHCs present in the data currently have these services, and that we are identifying 8 locations where these services would be introduced for the first time.**
+
+```{r}
+#Clearing environment
+rm(list = ls())
+```
+
+```{r}
+#Importing SF library, rgdal library was deprecated in 2023 by CRAN
+if(!library("sf", logical.return = TRUE)){
+  install.packages("sf")}
+library("sf")
+```
+
+```{r}
+#Importing the shape file from the folder
+fqhc_sp <- st_read("MO_2018_Federally_Qualified_Health_Center_Locations")
+```
+```{r}
+#Checking type of data after importing
+class(fqhc_sp)
+```
+
+```{r}
+#Checking description of the data
+summary(fqhc_sp)
+```
+
+```{r}
+#Plotting all the locations of FQHC with the map view
+plot(fqhc_sp$geometry, pch = "+", col = "black", main = "MO FQHC Locations")
+```
+
+```{r}
+#Importing the residential dataset of Missouri
+pop_df <-read.csv("Mo_pop_Sim.csv")
+```
+
+```{r}
+library(dplyr) #Importing dplyr
+set.seed(100)
+pop_sample <- pop_df %>% sample_n(6334) #As this dataset contains more than 6 million data points, therefore we are sampling it to only 6334 random samples
+pop_sf <- st_as_sf(pop_sample, coords = c("long", "lat"), crs = 4326) #For better accessibility, we are converting the dataframe to sf.
+```
+
+
+```{r}
+if(!library("geosphere", logical.return = TRUE)){
+  install.packages("geosphere")} #We need this package to compute the geo-spatial distance between two locations.
+library("geosphere")
+if(!library("GA", logical.return = TRUE)){
+  install.packages("GA")} #Importing Genetic algorithm package to be able to fit GA models
+library("GA")
+```
+
+**Here, I have used the second approach to the problem, as I believe this would be a much more relevant approach to real-life scenarios. Even though we are not exactly computing on-road distances, using this method, we can better focus on high-demand or density regions and find locations where the largest number of people can be served.**
+```{r}
+count_residences_within_radius <- function(geom, residences, radius = 48280) {
+  #This fitness function is going to find all the residences within 30 miles (48280 meters) for the established FQHC that will be passed during the function call, and it's going to return that number back to the main function.
+  distances <- distGeo(st_coordinates(geom), st_coordinates(residences))  # Compute distances
+  return(sum(distances <= radius))  # Count residences within radius
+}
+```
+**Assumptions: Two possible assumptions for this method are, 1. The best locations are where the most people can access services easily. 2. It assumes a 30-mile radius is a reasonable travel distance for healthcare access.**
+
+**Fitness function : Each FQHC location contributes to the total fitness based on the number of residents it serves within a 30-mile (48,280-meter) radius. The greater the total number of residents served, the better the solution.**
+
+**Reason for maximization : Maximizing this fitness function ensures that more people have access to mental health services, prioritizes densely populated areas for efficient resource allocation, and prevents wasted resources by placing facilities where demand is highest.**
+
+```{r}
+#This apply function is going to iterate through each established FQHC and save the number of residences after calling the count_residences_within_radius function in the SF data file.
+fqhc_sp$No.of.residences <- sapply(1:nrow(fqhc_sp), function(i) {
+  count_residences_within_radius(fqhc_sp[i, ], pop_sf)
+})
+```
+
+```{r}
+fitness_function <- function(indices) {
+  #This is the fitness function for our GA model. Here we are applying a penalty to the samples of genes that exist in the generation that doesn't have a size of 8; therefore, in the next consecutive generations, those samples are most likely to be excluded.
+  indices <- unique(round(indices))
+  if (length(indices) > 8) return(-Inf)  #Putting -inf for length of gene < 8
+  if (length(indices) < 8) return(-Inf)  #Putting -inf for length of gene > 8
+  return(sum(fqhc$No.of.residences[indices]))  # Fitness score
+}
+```
+
+
+```{r}
+#This is our GA model with 100 maximum iteration therefore 100 generations and mutation factor 0.1
+GA_mod <- ga(
+  type = "permutation",
+  fitness = fitness_function,
+  lower = 1,
+  upper = nrow(fqhc_sp),
+  popSize = 50,  # Population size
+  maxiter = 100, # Number of generations
+  pmutation = 0.1 # Mutation probability
+)
+```
+```{r}
+#Even though we have applied a penalty in the size for GA, it is still possible for GA to retain more than 8 genes in the final result; therefore, we will apply a filter on it to receive only the 8 topmost locations.
+best_indices <- unique(round(GA_mod@solution[1, ]))
+best_indices <- best_indices[1:8]
+best_fqhc <- fqhc_sp[best_indices, ]
+```
+
+
+
+```{r}
+#Printing the result
+print(data.frame(best_fqhc))
+```
+
+```{r}
+#Plotting the result in the map
+plot(best_fqhc$geometry, pch = "+", col = "black", main = "MO FQHC Locations")
+```
+
